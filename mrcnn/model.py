@@ -1917,6 +1917,8 @@ class MaskRCNN():
 
         # Note that P6 is used in RPN, but not in the classifier heads.
         rpn_feature_maps = [P2, P3, P4, P5, P6]
+        print('P2:', P2)
+        print('P3:', P3)
         mrcnn_feature_maps = [P2, P3, P4, P5]
 
         # Anchors
@@ -1937,6 +1939,7 @@ class MaskRCNN():
         layer_outputs = []  # list of lists
         for p in rpn_feature_maps:
             layer_outputs.append(rpn([p]))
+           
         # Concatenate layer outputs
         # Convert from list of lists of level outputs to list of lists
         # of outputs across levels.
@@ -1947,6 +1950,7 @@ class MaskRCNN():
                    for o, n in zip(outputs, output_names)]
 
         rpn_class_logits, rpn_class, rpn_bbox = outputs
+        print('rpn_class_logits',rpn_class_logits)
 
         # Generate proposals
         # Proposals are [batch, N, (y1, x1, y2, x2)] in normalized coordinates
@@ -2498,10 +2502,17 @@ class MaskRCNN():
             log("image_metas", image_metas)
             log("anchors", anchors)
         # Run object detection
-        detections, _, _, mrcnn_mask, _, _, _ =\
+        detections, _, _, mrcnn_mask, rpn_rois, _, rpn_bbox =\
             self.keras_model.predict([molded_images, image_metas, anchors], verbose=0)
         # Process detections
         results = []
+        print("detections",detections.shape)
+        print("rpn_rois",rpn_rois.shape)
+        print("rpn_bbox",rpn_bbox.shape)
+        print("molded_images: ", molded_images.shape)
+        print("image:",image.shape)
+        
+        
         for i, image in enumerate(images):
             final_rois, final_class_ids, final_scores, final_masks =\
                 self.unmold_detections(detections[i], mrcnn_mask[i],
@@ -2512,6 +2523,7 @@ class MaskRCNN():
                 "class_ids": final_class_ids,
                 "scores": final_scores,
                 "masks": final_masks,
+                "roi_feature": rpn_rois,
             })
         return results
 
@@ -2557,6 +2569,8 @@ class MaskRCNN():
         # Run object detection
         detections, _, _, mrcnn_mask, _, _, _ =\
             self.keras_model.predict([molded_images, image_metas, anchors], verbose=0)
+        
+        
         # Process detections
         results = []
         for i, image in enumerate(molded_images):
