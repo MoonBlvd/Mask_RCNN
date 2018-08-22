@@ -443,6 +443,7 @@ class PyramidROIAlign(KE.Layer):
 
         # Re-add the batch dimension
         pooled = tf.expand_dims(pooled, 0)
+        print("pooled from pyramid ROI align: ", pooled.shape)
         return pooled
 
     def compute_output_shape(self, input_shape):
@@ -684,7 +685,7 @@ class DetectionTargetLayer(KE.Layer):
 #  Detection Layer
 ############################################################
 
-def refine_detections_graph(rois, probs, deltas, window, config):
+def refine_detections_graph(rois, probs, deltas, window, shared_feature, config):
     """Refine classified proposals and filter overlaps and return final
     detections.
 
@@ -699,6 +700,7 @@ def refine_detections_graph(rois, probs, deltas, window, config):
     Returns detections shaped: [N, (y1, x1, y2, x2, class_id, score)] where
         coordinates are normalized.
     """
+    print('rois in refine: ',rois.shape)
     # Class IDs per ROI
     class_ids = tf.argmax(probs, axis=1, output_type=tf.int32)
     # Class probability of the top class of each ROI
@@ -712,7 +714,7 @@ def refine_detections_graph(rois, probs, deltas, window, config):
         rois, deltas_specific * config.BBOX_STD_DEV)
     # Clip boxes to image window
     refined_rois = clip_boxes_graph(refined_rois, window)
-
+    
     # TODO: Filter out boxes with zero area
 
     # Filter out background boxes
@@ -767,19 +769,22 @@ def refine_detections_graph(rois, probs, deltas, window, config):
     num_keep = tf.minimum(tf.shape(class_scores_keep)[0], roi_count)
     top_ids = tf.nn.top_k(class_scores_keep, k=num_keep, sorted=True)[1]
     keep = tf.gather(keep, top_ids)
-
+    print("refined_rois used for gather keep: ", refined_rois.shape)
+    print("keep: ", keep.shape)
+    print("after gather: ", tf.gather(refined_rois, keep).shape)
     # Arrange output as [N, (y1, x1, y2, x2, class_id, score)]
     # Coordinates are normalized.
+    print("shared feature in refined:", shared_feature)
     detections = tf.concat([
         tf.gather(refined_rois, keep),
         tf.to_float(tf.gather(class_ids, keep))[..., tf.newaxis],
         tf.gather(class_scores, keep)[..., tf.newaxis]
         ], axis=1)
-
+    features = tf.gather(shared_feature, keep)
     # Pad with zeros if detections < DETECTION_MAX_INSTANCES
     gap = config.DETECTION_MAX_INSTANCES - tf.shape(detections)[0]
     detections = tf.pad(detections, [(0, gap), (0, 0)], "CONSTANT")
-    return detections
+    return detections, features
 
 
 class DetectionLayer(KE.Layer):
@@ -800,7 +805,7 @@ class DetectionLayer(KE.Layer):
         mrcnn_class = inputs[1]
         mrcnn_bbox = inputs[2]
         image_meta = inputs[3]
-
+        shared_feature = inputs[4]
         # Get windows of images in normalized coordinates. Windows are the area
         # in the image that excludes the padding.
         # Use the shape of the first image in the batch to normalize the window
@@ -810,20 +815,21 @@ class DetectionLayer(KE.Layer):
         window = norm_boxes_graph(m['window'], image_shape[:2])
         
         # Run detection refinement graph on each item in the batch
-        detections_batch = utils.batch_slice(
-            [rois, mrcnn_class, mrcnn_bbox, window],
-            lambda x, y, w, z: refine_detections_graph(x, y, w, z, self.config),
+        print("rois passed to refine: ",rois.shape)
+        detections_batch, features = utils.batch_slice(
+            [rois, mrcnn_class, mrcnn_bbox, window, shared_feature],
+            lambda x, y, w, z, q: refine_detections_graph(x, y, w, z, q, self.config),
             self.config.IMAGES_PER_GPU)
-
+        #print("keep passed from batch_slice: ", keep.shape)
+        print("detections_batch passed from batch_slice: ",detections_batch.shape)
+        print("features passed from batch_slice: ",features.shape)
         # Reshape output
         # [batch, num_detections, (y1, x1, y2, x2, class_score)] in
         # normalized coordinates
-        return tf.reshape(
-            detections_batch,
-            [self.config.BATCH_SIZE, self.config.DETECTION_MAX_INSTANCES, 6])
+        return [tf.reshape(detections_batch,[self.config.BATCH_SIZE, self.config.DETECTION_MAX_INSTANCES, 6]), features]
 
     def compute_output_shape(self, input_shape):
-        return (None, self.config.DETECTION_MAX_INSTANCES, 6)
+        return [(None, self.config.DETECTION_MAX_INSTANCES, 6), (None, self.config.DETECTION_MAX_INSTANCES, 1024)]
 
 
 ############################################################
@@ -921,6 +927,7 @@ def fpn_classifier_graph(rois, feature_maps, image_meta,
         probs: [N, NUM_CLASSES] classifier probabilities
         bbox_deltas: [N, (dy, dx, log(dh), log(dw))] Deltas to apply to
                      proposal boxes
+        shared: features with size (?, 1000, 1024)
     """
     # ROI Pooling
     # Shape: [batch, num_boxes, pool_height, pool_width, channels]
@@ -938,6 +945,7 @@ def fpn_classifier_graph(rois, feature_maps, image_meta,
 
     shared = KL.Lambda(lambda x: K.squeeze(K.squeeze(x, 3), 2),
                        name="pool_squeeze")(x)
+    print("shared features: ", shared.shape)
 
     # Classifier head
     mrcnn_class_logits = KL.TimeDistributed(KL.Dense(num_classes),
@@ -953,7 +961,7 @@ def fpn_classifier_graph(rois, feature_maps, image_meta,
     s = K.int_shape(x)
     mrcnn_bbox = KL.Reshape((s[1], num_classes, 4), name="mrcnn_bbox")(x)
 
-    return mrcnn_class_logits, mrcnn_probs, mrcnn_bbox
+    return mrcnn_class_logits, mrcnn_probs, mrcnn_bbox, shared
 
 
 def build_fpn_mask_graph(rois, feature_maps, image_meta,
@@ -1990,7 +1998,7 @@ class MaskRCNN():
 
             # Network Heads
             # TODO: verify that this handles zero padded ROIs
-            mrcnn_class_logits, mrcnn_class, mrcnn_bbox =\
+            mrcnn_class_logits, mrcnn_class, mrcnn_bbox, shared_features =\
                 fpn_classifier_graph(rois, mrcnn_feature_maps, input_image_meta,
                                      config.POOL_SIZE, config.NUM_CLASSES,
                                      train_bn=config.TRAIN_BN,
@@ -2030,17 +2038,22 @@ class MaskRCNN():
         else:
             # Network Heads
             # Proposal classifier and BBox regressor heads
-            mrcnn_class_logits, mrcnn_class, mrcnn_bbox =\
+            
+            mrcnn_class_logits, mrcnn_class, mrcnn_bbox, shared_features =\
                 fpn_classifier_graph(rpn_rois, mrcnn_feature_maps, input_image_meta,
                                      config.POOL_SIZE, config.NUM_CLASSES,
                                      train_bn=config.TRAIN_BN,
                                      fc_layers_size=config.FPN_CLASSIF_FC_LAYERS_SIZE)
+            print("mrcnn_class: ", mrcnn_class.shape)
+            print("rpn_rois: ", rpn_rois.shape)
+            print("shared_features: ", shared_features.shape)
 
             # Detections
             # output is [batch, num_detections, (y1, x1, y2, x2, class_id, score)] in 
             # normalized coordinates
-            detections = DetectionLayer(config, name="mrcnn_detection")(
-                [rpn_rois, mrcnn_class, mrcnn_bbox, input_image_meta])
+            detections, features = DetectionLayer(config, name="mrcnn_detection")(
+                [rpn_rois, mrcnn_class, mrcnn_bbox, input_image_meta, shared_features])
+            print("keep passed to outside is: ", features.shape)
 
             # Create masks for detections
             detection_boxes = KL.Lambda(lambda x: x[..., :4])(detections)
@@ -2052,7 +2065,7 @@ class MaskRCNN():
 
             model = KM.Model([input_image, input_image_meta, input_anchors],
                              [detections, mrcnn_class, mrcnn_bbox,
-                                 mrcnn_mask, rpn_rois, rpn_class, rpn_bbox],
+                                 mrcnn_mask, rpn_rois, rpn_class, rpn_bbox, features],
                              name='mask_rcnn')
 
         # Add multi-GPU support.
@@ -2397,7 +2410,7 @@ class MaskRCNN():
         return molded_images, image_metas, windows
 
     def unmold_detections(self, detections, mrcnn_mask, original_image_shape,
-                          image_shape, window):
+                          image_shape, window, features):
         """Reformats the detections of one image from the format of the neural
         network output to a format suitable for use in the rest of the
         application.
@@ -2408,12 +2421,14 @@ class MaskRCNN():
         image_shape: [H, W, C] Shape of the image after resizing and padding
         window: [y1, x1, y2, x2] Pixel coordinates of box in the image where the real
                 image is excluding the padding.
+        features: [N, 1024]
 
         Returns:
         boxes: [N, (y1, x1, y2, x2)] Bounding boxes in pixels
         class_ids: [N] Integer class IDs for each bounding box
         scores: [N] Float probability scores of the class_id
         masks: [height, width, num_instances] Instance masks
+        new_features
         """
         # How many detections do we have?
         # Detections array is padded with zeros. Find the first class_id == 0.
@@ -2448,6 +2463,7 @@ class MaskRCNN():
             class_ids = np.delete(class_ids, exclude_ix, axis=0)
             scores = np.delete(scores, exclude_ix, axis=0)
             masks = np.delete(masks, exclude_ix, axis=0)
+            features = np.delete(features, exclude_ix, axis=0)
             N = class_ids.shape[0]
 
         # Resize masks to original image size and set boundary threshold.
@@ -2459,7 +2475,7 @@ class MaskRCNN():
         full_masks = np.stack(full_masks, axis=-1)\
             if full_masks else np.empty(original_image_shape[:2] + (0,))
 
-        return boxes, class_ids, scores, full_masks
+        return boxes, class_ids, scores, full_masks, features
 
     def detect(self, images, verbose=0):
         """Runs the detection pipeline.
@@ -2502,28 +2518,25 @@ class MaskRCNN():
             log("image_metas", image_metas)
             log("anchors", anchors)
         # Run object detection
-        detections, _, _, mrcnn_mask, rpn_rois, _, rpn_bbox =\
+        detections, _, _, mrcnn_mask, rpn_rois, _, rpn_bbox, features =\
             self.keras_model.predict([molded_images, image_metas, anchors], verbose=0)
+         
         # Process detections
         results = []
-        print("detections",detections.shape)
-        print("rpn_rois",rpn_rois.shape)
-        print("rpn_bbox",rpn_bbox.shape)
-        print("molded_images: ", molded_images.shape)
-        print("image:",image.shape)
-        
+        print("detections", detections.shape)
+        print("features: ", features.shape)
         
         for i, image in enumerate(images):
-            final_rois, final_class_ids, final_scores, final_masks =\
+            final_rois, final_class_ids, final_scores, final_masks, final_features =\
                 self.unmold_detections(detections[i], mrcnn_mask[i],
                                        image.shape, molded_images[i].shape,
-                                       windows[i])
+                                       windows[i], features[i])
             results.append({
                 "rois": final_rois,
                 "class_ids": final_class_ids,
                 "scores": final_scores,
                 "masks": final_masks,
-                "roi_feature": rpn_rois,
+                "roi_features": final_features,
             })
         return results
 
