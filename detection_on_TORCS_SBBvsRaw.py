@@ -49,9 +49,6 @@ COCO_MODEL_PATH = os.path.join(ROOT_DIR, "mask_rcnn_coco.h5")
 if not os.path.exists(COCO_MODEL_PATH):
     utils.download_trained_weights(COCO_MODEL_PATH)
 
-# Directory of images to run detection on
-IMAGE_DIR = os.path.join(ROOT_DIR, "SBB_NLP_example")
-
 # # indicate GPUs
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"]="1"
@@ -82,7 +79,7 @@ num_classes = len(class_names)
 
 saver = False
 display = False
-write_file = False   
+write_file = True  
 '''for saving observations of each video'''
 all_observations = {}
 
@@ -102,8 +99,6 @@ all_raw_images = sorted(glob.glob(RAW_IMG_DIR + '*'))
 all_raw_images = all_raw_images[:-30]
 
 for i, sbb_image_file in enumerate(all_sbb_images):
-    if i < 5342:
-        continue
     
     raw_image_file = all_raw_images[i]
     sbb_img = cv2.imread(sbb_image_file)
@@ -134,7 +129,7 @@ for i, sbb_image_file in enumerate(all_sbb_images):
     # detection on raw image and save
     mrcnn_detections = model.detect([raw_img], verbose=1)[0]
     interesting_objects = np.where(np.logical_and(np.logical_or(mrcnn_detections['class_ids']==3,
-                                                                mrcnn_detections['class_ids']==8,),
+                                                                mrcnn_detections['class_ids']==8),
                                                   mrcnn_detections['class_ids']<num_classes))[0]
 
     bboxes = mrcnn_detections['rois'][interesting_objects]
@@ -147,7 +142,7 @@ for i, sbb_image_file in enumerate(all_sbb_images):
         for j, bbox in enumerate(bboxes):
             w = bbox[3]-bbox[1]
             h = bbox[2]-bbox[0]
-            if w > 0.7 * W or w < 0.05 * W:
+            if w > 0.7 * W:# or w < 0.05 * W:
                 continue
             f_out.write('%d,%.3f,%d,%d,%d,%d\n' % (class_ids[j], scores[j],bbox[0],bbox[1],bbox[2],bbox[3]))
 
@@ -164,7 +159,7 @@ for i, sbb_image_file in enumerate(all_sbb_images):
     # detection on SBB compreseed image and save
     mrcnn_detections = model.detect([sbb_img], verbose=1)[0]
     interesting_objects = np.where(np.logical_and(np.logical_or(mrcnn_detections['class_ids']==3,
-                                                                mrcnn_detections['class_ids']==8,),
+                                                                mrcnn_detections['class_ids']==8),
                                                   mrcnn_detections['class_ids']<num_classes))[0]
 
     bboxes = mrcnn_detections['rois'][interesting_objects]
@@ -177,7 +172,7 @@ for i, sbb_image_file in enumerate(all_sbb_images):
         for j, bbox in enumerate(bboxes):
             w = bbox[3]-bbox[1]
             h = bbox[2]-bbox[0]
-            if w > 0.8 * W or w < 0.05 * w:
+            if w > 0.7 * W:# or w < 0.05 * w:
                 continue
             f_out.write('%d,%.3f,%d,%d,%d,%d\n' % (class_ids[j], scores[j],bbox[0],bbox[1],bbox[2],bbox[3]))
 
@@ -194,4 +189,3 @@ for i, sbb_image_file in enumerate(all_sbb_images):
 
     
 #     plt.clf()
-    break     
