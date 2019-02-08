@@ -112,7 +112,8 @@ def display_instances(image, boxes, masks, class_ids, class_names,
     if not ax:
         _, ax = plt.subplots(1, figsize=figsize)
         auto_show = True
-
+    auto_show = False
+    
     # Generate random colors
     colors = colors or random_colors(N)
 
@@ -171,8 +172,12 @@ def display_instances(image, boxes, masks, class_ids, class_names,
     if save_path is not None:
         plt.savefig(save_path)
         
-    if auto_show:
-        plt.show()
+#     if auto_show:
+#         plt.show()
+        
+    ax.clear()
+    plt.clf()
+    plt.close()
     
        
 def display_tracklets(image, boxes, ids, masks, class_ids, class_names,
