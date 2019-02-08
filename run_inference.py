@@ -1,16 +1,11 @@
 '''Only do detection, no tracking'''
 import os
 import sys
-import random
-import math
 import numpy as np
-import skimage.io
-import matplotlib
-import matplotlib.pyplot as plt
 import copy
 
 from mrcnn import visualize
-from sort.sort import Sort
+# from sort.sort import Sort
 from utils import *
 import glob
 import time
