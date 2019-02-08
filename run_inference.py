@@ -15,19 +15,48 @@ from utils import *
 import glob
 import time
 from PIL import Image
+import argparse
+from mrcnn.utils import y1x1y2x2_to_xywh
 
 # Root directory of the project
 ROOT_DIR = os.path.abspath(".")
-
 # Import Mask RCNN
 sys.path.append(ROOT_DIR)  # To find local version of the library
-from mrcnn import utils
-import mrcnn.model as modellib
-# Import COCO config
 
+# Import COCO config
 sys.path.append(os.path.join(ROOT_DIR, "samples/coco/"))  # To find local version
 import coco
+from mrcnn import utils
+import mrcnn.model as modellib
 
+def parse_args():
+    """ Parse command line arguments.
+    """
+    parser = argparse.ArgumentParser(description="MaskRCNN generate boxes")
+    parser.add_argument(
+        "-i", "--image_dir", help="Path to folder containing folders of images",
+        default=None, required=True)
+    parser.add_argument(
+        "-o", "--out_dir", help="Path to folder containing folders of images",
+        default=None, required=True)
+    parser.add_argument(
+        "--save_det_images", help='''Whether to save the box-on-images or not. 
+                                    This will create a lot of folders in your directory!!''',
+        default=False, action='store_true')
+    parser.add_argument(
+        "--for_deepsort", help='''Whether to save detection in deep-sort format or not. 
+        Deepsort format is (frame_id, -1, x1, y1, w, h, feature)''', 
+        default=True, action='store_true')
+    parser.add_argument(
+        "--image_shape", help="image shape in [W,H,channels] as a list", nargs='+', type=int,
+        default=[1280, 720, 3], required=True)
+    parser.add_argument(
+        "-g", "--gpu", help="id of gpus to use", type=str,
+        default="0")
+    
+    return parser.parse_args()
+
+args = parse_args()
 
 # Directory to save logs and trained model
 MODEL_DIR = os.path.join(ROOT_DIR, "logs")
@@ -38,60 +67,27 @@ COCO_MODEL_PATH = os.path.join(ROOT_DIR, "pretrained_models", "mask_rcnn_coco.h5
 if not os.path.exists(COCO_MODEL_PATH):
     utils.download_trained_weights(COCO_MODEL_PATH)
 
-# Directory of images to run detection on
-IMAGE_DIR = os.path.join(ROOT_DIR, "images")
-
 # indicate GPUs
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]="0"
-
+os.environ["CUDA_VISIBLE_DEVICES"]=args.gpu
 
 # only for testing
-IMG_DIR = '/media/DATA/VAD_datasets/taiwan_sa/testing/frames/'#'/media/DATA/traffic_accident_videos/images_10hz/'
-OUT_DIR = '/media/DATA/VAD_datasets/taiwan_sa/testing/mask_rcnn_detections/'#'/media/DATA/traffic_accident_videos/mask_rcnn_detections/'
+IMG_DIR = args.image_dir #'/media/DATA/VAD_datasets/taiwan_sa/testing/frames/'#'/media/DATA/traffic_accident_videos/images_10hz/'
+OUT_DIR = args.out_dir #'/media/DATA/VAD_datasets/taiwan_sa/testing/mask_rcnn_detections/'#'/media/DATA/traffic_accident_videos/mask_rcnn_detections/'
 
-
+print(args.image_shape[0])
 class InferenceConfig(coco.CocoConfig):
     # Set batch size to 1 since we'll be running inference on
     # one image at a time. Batch size = GPU_COUNT * IMAGES_PER_GPU
-    GPU_COUNT = 1
+    GPU_COUNT = len(args.gpu)
     IMAGES_PER_GPU = 1
-    IMAGE_SHAPE = [1280,720,3]
-    IMAGE_MAX_DIM = 1280
+    IMAGE_SHAPE = args.image_shape
+    IMAGE_MAX_DIM = max(args.image_shape)
 #     IMAGE_RESIZE_MODE = "none"
 #     NUM_CLASSES = 15
 
 config = InferenceConfig()
 config.display()
-
-def y1x1y2x2_to_xywh(boxes):
-    '''
-    Params:
-        bounding boxes: (num_boxes, 4) in [ymin,xmin,ymax,xmax] order
-    Returns:
-        bounding boxes: (num_boxes, 4) in [xmin,ymin,w,h] order
-    '''
-    boxes = y1x1y2x2_to_x1y1x2y2(boxes)    
-    boxes[:,2] -=boxes[:,0]
-    boxes[:,3] -=boxes[:,1] 
-    return boxes
-
-def y1x1y2x2_to_x1y1x2y2(boxes):
-    '''
-    Params:
-        bounding boxes: (num_boxes, 4) in [ymin,xmin,ymax,xmax] order
-    Returns:
-        bounding boxes: (num_boxes, 4) in [xmin, ymin,xmax, ymax] order
-    '''
-    tmp = copy.deepcopy(boxes[:,1])
-    boxes[:,1] = boxes[:,0]
-    boxes[:,0] = tmp
-    
-    tmp = copy.deepcopy(boxes[:,3])
-    boxes[:,3] = boxes[:,2]
-    boxes[:,2] = tmp
-    return boxes
-
 
 # Create model object in inference mode.
 model = modellib.MaskRCNN(mode="inference", model_dir=MODEL_DIR, config=config)
@@ -107,64 +103,36 @@ class_names = ['BG', 'person', 'bicycle', 'car', 'motorcycle', 'airplane',
                'fire hydrant', 'stop sign', 'parking meter', 'bench']
 
 num_classes = len(class_names)
-
-
-all_folders = glob.glob(IMG_DIR + '*')
-
-W = 1280
-H = 720
-ROI = [0, 0, 720, 1280]
-display = False
-
-
-colors = np.random.rand(32, 3)
-'''for saving observations of each video'''
-all_observations = {}
-
-for_deepsort = True
-save_det_images = False
+all_folders = glob.glob(os.path.join(IMG_DIR, '*'))
 
 for folder_id, folder in enumerate(all_folders):
     video_name = folder.split('/')[-1]
     print(video_name)    
+    
     '''for display'''
-    if display:
+    if args.save_det_images:
         colours = np.random.rand(32, 3)*255  # used only for display
         plt.ion()
         fig = plt.figure()
-    
-    '''init tracker'''
-#     use_dlibTracker = False # True to use dlib correlation tracker, False to use Kalman Filter tracker
-#     all_trackers =  Sort(ROI, max_age=3,min_hits=3, use_dlib=use_dlibTracker,track_masks=True)
-    all_trackers =  Sort(max_age=5, min_hits=3, since_update_thresh=1)
-    
-    '''count time'''
-    total_time = 0
 
-#     '''write results'''
+        SAMPLE_IMG_DIR = os.path.join(OUT_DIR, video_name)
+        if not os.path.isdir(SAMPLE_IMG_DIR):
+            os.mkdir(SAMPLE_IMG_DIR)
+    
+    
+    '''write results'''
     out_file = os.path.join(OUT_DIR, video_name + '.txt')
     out_file_with_feature = os.path.join(OUT_DIR, video_name + '.npy')
-    
+
     try:
-        os.stat(OUT_DIR)
+        os.stat(out_file_with_feature)
         print("video has been processed!")
-#         continue
+        continue
     except:
-        os.mkdir(OUT_DIR)
-        aa = 1
-#     f_out = open(out_file, 'w')
+        pass
+    
     frame = 0
-    
-    '''for saving observations of each car'''
-    observations = {}
-    
     all_images = sorted(glob.glob(os.path.join(folder, 'images','*.jpg')))
-    
-    '''make dir if doesn exist'''
-    SAMPLE_IMG_DIR = os.path.join(OUT_DIR, video_name)
-    if not os.path.isdir(SAMPLE_IMG_DIR):
-        os.mkdir(SAMPLE_IMG_DIR)
-        
     output_with_feature = []
     for image_file in all_images:
         img = np.asarray(Image.open(image_file))
@@ -175,14 +143,14 @@ for folder_id, folder in enumerate(all_folders):
         start_time = time.time()
         mrcnn_detections  = model.detect([img], verbose=1)[0]
         cycle_time = time.time() - start_time
-        total_time += cycle_time
         print('frame: %d...took: %3fs'%(frame,cycle_time))
         
+        # only select specific type of objects
         interesting_objects = np.where(mrcnn_detections['class_ids'] < num_classes)[0]
         
         bboxes = mrcnn_detections['rois'][interesting_objects] # ymin xmin ymax xmax
         # convert to xywh format for deepsort purpose
-        if for_deepsort:
+        if args.for_deepsort:
             deepsort_bboxes = y1x1y2x2_to_xywh(copy.deepcopy(bboxes))
         
         masks = mrcnn_detections['masks'][:,:,interesting_objects]
@@ -192,11 +160,17 @@ for folder_id, folder in enumerate(all_folders):
         
         frame_ids = frame * np.ones([bboxes.shape[0],1])
         track_ids = -1 * np.ones([bboxes.shape[0],1])
-        complete_output_array = np.hstack([frame_ids, 
-                                           track_ids, 
-                                           deepsort_bboxes, 
-                                           np.expand_dims(scores, axis=-1), 
-                                           features])
+        if args.for_deepsort:
+            complete_output_array = np.hstack([frame_ids, 
+                                            track_ids, 
+                                            deepsort_bboxes, 
+                                            np.expand_dims(scores, axis=-1), 
+                                            features])
+        else:
+            complete_output_array = np.hstack([frame_ids, 
+                                            track_ids, 
+                                            deepsort_bboxes, 
+                                            np.expand_dims(scores, axis=-1)])
         
         if len(output_with_feature) == 0:
             output_with_feature = complete_output_array
@@ -205,7 +179,7 @@ for folder_id, folder in enumerate(all_folders):
             
     
 #         save masked images
-        if save_det_images:
+        if args.save_det_images:
             save_path = os.path.join(SAMPLE_IMG_DIR, str(format(frame,'04'))+'.jpg')
             visualize.display_instances(img, bboxes, masks, classes, class_names,
                                               scores=scores, save_path=save_path,

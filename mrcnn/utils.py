@@ -20,6 +20,7 @@ import skimage.transform
 import urllib.request
 import shutil
 import warnings
+import copy
 
 # URL from which to download the latest COCO trained weights
 COCO_MODEL_URL = "https://github.com/matterport/Mask_RCNN/releases/download/v2.0/mask_rcnn_coco.h5"
@@ -28,6 +29,33 @@ COCO_MODEL_URL = "https://github.com/matterport/Mask_RCNN/releases/download/v2.0
 ############################################################
 #  Bounding Boxes
 ############################################################
+def y1x1y2x2_to_xywh(boxes):
+    '''
+    Params:
+        bounding boxes: (num_boxes, 4) in [ymin,xmin,ymax,xmax] order
+    Returns:
+        bounding boxes: (num_boxes, 4) in [xmin,ymin,w,h] order
+    '''
+    boxes = y1x1y2x2_to_x1y1x2y2(boxes)    
+    boxes[:,2] -=boxes[:,0]
+    boxes[:,3] -=boxes[:,1] 
+    return boxes
+
+def y1x1y2x2_to_x1y1x2y2(boxes):
+    '''
+    Params:
+        bounding boxes: (num_boxes, 4) in [ymin,xmin,ymax,xmax] order
+    Returns:
+        bounding boxes: (num_boxes, 4) in [xmin, ymin,xmax, ymax] order
+    '''
+    tmp = copy.deepcopy(boxes[:,1])
+    boxes[:,1] = boxes[:,0]
+    boxes[:,0] = tmp
+    
+    tmp = copy.deepcopy(boxes[:,3])
+    boxes[:,3] = boxes[:,2]
+    boxes[:,2] = tmp
+    return boxes
 
 def extract_bboxes(mask):
     """Compute bounding boxes from masks.
