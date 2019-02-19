@@ -24,6 +24,8 @@ import coco
 from mrcnn import utils
 import mrcnn.model as modellib
 
+CLASSES_KEEP = [1,2,3,4,6,8]
+
 def parse_args():
     """ Parse command line arguments.
     """
@@ -152,13 +154,14 @@ for folder_id, folder in enumerate(all_folders):
         classes = mrcnn_detections['class_ids'][interesting_objects]
         scores = mrcnn_detections['scores'][interesting_objects]
         features = mrcnn_detections['roi_features'][interesting_objects]
-        
+
         frame_ids = frame * np.ones([bboxes.shape[0],1])
         track_ids = -1 * np.ones([bboxes.shape[0],1])
         if args.for_deepsort:
             complete_output_array = np.hstack([frame_ids, 
                                             track_ids, 
                                             deepsort_bboxes, 
+                                            np.expand_dims(classes, axis=-1)
                                             np.expand_dims(scores, axis=-1), 
                                             features])
         else:
