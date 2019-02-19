@@ -12,6 +12,7 @@ import time
 from PIL import Image
 import argparse
 from mrcnn.utils import y1x1y2x2_to_xywh
+import matplotlib.pyplot as plt
 
 # Root directory of the project
 ROOT_DIR = os.path.abspath(".")
