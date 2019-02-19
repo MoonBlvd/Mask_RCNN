@@ -161,7 +161,7 @@ for folder_id, folder in enumerate(all_folders):
             complete_output_array = np.hstack([frame_ids, 
                                             track_ids, 
                                             deepsort_bboxes, 
-                                            np.expand_dims(classes, axis=-1)
+                                            np.expand_dims(classes, axis=-1),
                                             np.expand_dims(scores, axis=-1), 
                                             features])
         else:
